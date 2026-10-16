@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Horizon Pulse 104.7 FM — Hosted by Amy Simpson</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <!-- Top Forza Horizon Festival Header -->
+  <header class="horizon-header">
+    <div class="brand-cluster">
+      <div class="station-emblem">HP</div>
+      <div class="station-titles">
+        <h1>Horizon Pulse 104.7</h1>
+        <div class="station-subtitle">FORZA HORIZON FESTIVAL RADIO • HOSTED BY AMY SIMPSON</div>
+      </div>
+    </div>
+
+    <div class="header-telemetry">
+      <span id="backend-status-badge" class="status-chip">CHECKING STUDIO SERVER...</span>
+      <span id="nim-key-status-badge" class="status-chip">NVIDIA NIM: OFFLINE FALLBACK</span>
+      <span id="spotify-connection-status" class="status-chip">SPOTIFY: PUBLIC / PREVIEW MODE</span>
+      <button id="btn-spotify-oauth" class="btn btn-ghost" style="padding: 7px 13px; font-size: 0.74rem;">
+        CONNECT SPOTIFY OAUTH
+      </button>
+      <button id="btn-open-settings" class="btn btn-primary" style="padding: 7px 14px; font-size: 0.74rem;">
+        ⚙ FULL STUDIO SETTINGS
+      </button>
+    </div>
+  </header>
+
+  <!-- Instant NVIDIA NIM API Key Quick-Setup Bar -->
+  <div class="nim-quick-bar">
+    <div class="nim-quick-inner">
+      <div class="nim-quick-left">
+        <span class="nvidia-badge">NVIDIA NIM + RIVA</span>
+        <div class="nim-quick-text">
+          <strong>Quick API Key Setup:</strong> Paste your <code>nvapi-...</code> key here to power both <strong>NVIDIA Riva TTS</strong> &amp; <strong>Llama 3.3 DJ Trivia</strong>
+          <span>(Saved automatically to <code>config.json</code>)</span>
+        </div>
+      </div>
+      <div class="nim-quick-controls">
+        <input
+          id="quick-nim-api-key"
+          type="password"
+          class="text-input"
+          placeholder="Paste nvapi-... key here"
+          style="max-width: 280px;"
+        />
+        <button id="btn-save-quick-nim" class="btn btn-nvidia" style="white-space: nowrap;">
+          ✔ SAVE &amp; ACTIVATE
+        </button>
+        <button id="btn-quick-test-voice" class="btn btn-ghost" style="white-space: nowrap;">
+          🔊 TEST VOICE
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Studio Layout -->
+  <main class="studio-layout">
+    <!-- Left Column: Now Playing Deck + Procedural Visualizer + Amy Simpson Booth + Playlist Sources -->
+    <div class="left-column">
+      <!-- Skill Song 2X Multiplier Banner (Hidden unless active) -->
+      <div id="skill-song-hud" class="skill-song-banner hidden">
+        <div class="skill-song-left">
+          <span>⚡ HORIZON SKILL SONG ACTIVE • 2X SKILL MULTIPLIER!</span>
+        </div>
+        <div id="skill-song-score" class="skill-score-counter">1,250 x 10.0</div>
+      </div>
+
+      <!-- Now Playing Turntable & Procedural Audio-Reactive Visualizer Deck -->
+      <section class="glass-card now-playing-deck">
+        <div class="deck-top-row">
+          <div class="turntable-wrapper">
+            <div id="turntable-disc" class="turntable-disc">
+              <div id="now-playing-cover" class="cover-art-inner"></div>
+            </div>
+          </div>
+
+          <div class="track-details">
+            <div class="track-badges-row">
+              <span id="now-playing-source" class="track-source-pill pill-local">HORIZON FESTIVAL MIX</span>
+              <span class="freq-pill">104.7 FM STEREO</span>
+            </div>
+            <h2 id="now-playing-title">A Moment Apart (Horizon Festival Edit)</h2>
+            <div id="now-playing-artist">ODESZA</div>
+            <div id="now-playing-album">Horizon Pulse Official Anthology</div>
+          </div>
+        </div>
+
+        <!-- Procedural Audio-Reactive Visualizer Stage -->
+        <div id="visualizer-stage" class="visualizer-stage">
+          <div class="visualizer-toolbar">
+            <div class="vis-mode-pills">
+              <button class="vis-pill active" data-vis-mode="highway">🛣️ 3D HIGHWAY</button>
+              <button class="vis-pill" data-vis-mode="reactor">💠 PULSE REACTOR</button>
+              <button class="vis-pill" data-vis-mode="aurora">🌌 AURORA WAVES</button>
+              <button class="vis-pill" data-vis-mode="bars">📊 SPECTRUM EMBERS</button>
+            </div>
+            <div class="vis-mode-pills">
+              <button id="btn-toggle-theater" class="vis-pill" title="Toggle Full-Window Forza Horizon HUD">
+                ⛶ THEATER HUD
+              </button>
+            </div>
+          </div>
+
+          <canvas id="spectrum-canvas" width="760" height="215"></canvas>
+
+          <div class="vis-hud-overlay">
+            <span id="vis-hud-track">HORIZON PULSE • 104.7 FM</span>
+            <span id="vis-hud-amy">🎙️ AMY SIMPSON BOOTH TELEMETRY</span>
+          </div>
+        </div>
+
+        <div class="progress-section">
+          <div id="progress-bar-track" class="progress-bar-track" title="Click to seek">
+            <div id="progress-bar-fill" class="progress-bar-fill"></div>
+          </div>
+          <div class="time-row">
+            <span id="time-current">0:00</span>
+            <span>UP NEXT: <strong id="up-next-summary" style="color: #fff;">CHVRCHES — Clearest Blue</strong></span>
+            <span><span id="time-remaining">-0:36</span> / <span id="time-total">0:36</span></span>
+          </div>
+        </div>
+
+        <div class="transport-row">
+          <button id="btn-play-pause" class="btn btn-primary">
+            <span class="btn-icon">▶</span> START BROADCAST
+          </button>
+          <button id="btn-dj-transition-now" class="btn btn-cyan" title="Duck music now and trigger Amy Simpson's DJ transition into the next track">
+            🎙️ AMY DJ TRANSITION NOW
+          </button>
+          <button id="btn-trigger-skill-song" class="btn btn-ghost" title="Arm a Forza Horizon Skill Song announcement for the next track!">
+            ⚡ ARM SKILL SONG
+          </button>
+          <button id="btn-shuffle-queue" class="btn btn-ghost" title="Shuffle upcoming tracks">
+            🔀 SHUFFLE
+          </button>
+
+          <div class="volume-control">
+            <span>VOL</span>
+            <input id="master-volume-slider" type="range" min="0" max="1" step="0.02" value="0.95" />
+          </div>
+        </div>
+      </section>
+
+      <!-- Amy Simpson Live Studio Booth Card -->
+      <section id="amy-on-air-banner" class="glass-card amy-booth-card">
+        <div class="amy-header">
+          <div class="amy-profile">
+            <div class="amy-avatar">AS</div>
+            <div class="amy-name-row">
+              <h2>AMY SIMPSON</h2>
+              <div class="amy-role">HOST OF HORIZON PULSE • DYNAMIC AI + TRIVIA ENGINE</div>
+            </div>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span id="amy-status-pill" class="amy-mic-pill mic-standby">STANDBY • MONITORING MIX</span>
+            <button id="btn-audition-amy-booth" class="btn btn-ghost" style="padding: 6px 11px; font-size: 0.72rem;">
+              🔊 AUDITION VOICE
+            </button>
+          </div>
+        </div>
+
+        <div id="amy-live-script" class="amy-script-teleprompter">
+          "You're locked into Horizon Pulse! I'm Amy Simpson, and whether you're chasing apexes or cruising with friends, hit Start Broadcast and I'll mix your Spotify and local playlists together with live artist commentary between every song."
+        </div>
+
+        <div class="amy-footer-meta">
+          <span>VOICE &amp; SCRIPT ENGINE: <strong id="amy-voice-engine-label" style="color: var(--pulse-cyan);">NVIDIA Riva TTS + NVIDIA NIM / Horizon Engine</strong></span>
+          <span id="precache-status-badge" class="precache-pill status-ready">NEXT LINK READY</span>
+        </div>
+      </section>
+
+      <!-- Hybrid Playlist Loader (Spotify + Local Playlists) -->
+      <section class="glass-card">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+          <h3 style="font-size: 0.98rem; letter-spacing: 0.7px; text-transform: uppercase;">
+            ➕ Mix Spotify &amp; Local Playlists
+          </h3>
+          <label style="font-size: 0.76rem; color: var(--text-muted); display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="checkbox" id="chk-replace-queue" />
+            Replace current queue instead of smart-interleaving
+          </label>
+        </div>
+
+        <div class="sources-grid">
+          <!-- Spotify Playlist Input -->
+          <div class="source-box">
+            <h3>
+              <span style="color: var(--spotify-green);">● Spotify Playlist</span>
+              <span style="font-size: 0.68rem; color: var(--text-muted);">URL / URI / ID</span>
+            </h3>
+            <div class="input-row">
+              <input
+                id="input-spotify-playlist"
+                type="text"
+                class="text-input"
+                placeholder="https://open.spotify.com/playlist/..."
+              />
+              <button id="btn-load-spotify-playlist" class="btn btn-primary" style="white-space: nowrap; padding: 9px 13px;">
+                ADD SPOTIFY PLAYLIST
+              </button>
+            </div>
+            <div style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 4px;">
+              Quick-Load Public Spotify Playlists (Works Immediately):
+            </div>
+            <div class="preset-chips">
+              <span class="preset-chip" data-spotify-preset="37i9dQZF1DX4dyzvuaRJ0n">mint (Electronic)</span>
+              <span class="preset-chip" data-spotify-preset="37i9dQZF1DX0BcQWzuB7ZO">Dance Hits</span>
+              <span class="preset-chip" data-spotify-preset="37i9dQZF1DXdLEN7aqioXM">Synthwave / Outrun</span>
+              <span class="preset-chip" data-spotify-preset="37i9dQZF1DX6J5NfMJS675">Indie Electronic</span>
+            </div>
+          </div>
+
+          <!-- Local Folder / Files / .M3U8 Input -->
+          <div class="source-box">
+            <h3>
+              <span style="color: var(--pulse-cyan);">● Local Playlist / Folder</span>
+              <span style="font-size: 0.68rem; color: var(--text-muted);">MP3 • FLAC • WAV • M3U8</span>
+            </h3>
+            <div class="input-row">
+              <input
+                id="input-local-path"
+                type="text"
+                class="text-input"
+                placeholder="C:\Users\reala\Music or playlist.m3u8"
+              />
+              <button id="btn-scan-local-path" class="btn btn-cyan" style="white-space: nowrap; padding: 9px 13px;">
+                SCAN DISK
+              </button>
+            </div>
+            <div class="file-buttons-row">
+              <label class="file-label-btn">
+                🎵 Select Audio Files
+                <input id="input-local-files" type="file" multiple accept="audio/*,.mp3,.flac,.wav,.ogg,.m4a" style="display: none;" />
+              </label>
+              <label class="file-label-btn">
+                📁 Select Music Folder
+                <input id="input-local-folder" type="file" webkitdirectory directory multiple style="display: none;" />
+              </label>
+              <span style="font-size: 0.7rem; color: var(--text-muted); align-self: center;">
+                or drag &amp; drop files anywhere!
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Right Column: Unified Horizon Pulse Rotation Queue -->
+    <div class="right-column">
+      <section class="glass-card" style="height: 100%;">
+        <div class="queue-header">
+          <div>
+            <h3 style="font-size: 1.02rem; font-weight: 900; letter-spacing: 0.8px; text-transform: uppercase;">
+              📻 Horizon Pulse Rotation Queue
+            </h3>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">
+              Click any song to have Amy Simpson transition directly into it
+            </div>
+          </div>
+          <span id="queue-count-badge" class="status-chip">5 Tracks</span>
+        </div>
+
+        <div id="queue-list" class="queue-list"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- Settings Modal: NVIDIA Riva TTS, NVIDIA NIM LLM, and Spotify SDK -->
+  <div id="settings-modal" class="modal-backdrop hidden">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <div>
+          <h3 style="font-size: 1.15rem; font-weight: 900;">🎛️ Horizon Pulse Studio Configuration</h3>
+          <div style="font-size: 0.76rem; color: var(--text-muted);">
+            Configure NVIDIA Riva TTS (Local gRPC or NIM API), NVIDIA NIM LLM Trivia, &amp; Spotify PKCE
+          </div>
+        </div>
+        <button id="btn-close-settings" class="btn btn-ghost" style="padding: 6px 12px;">✕</button>
+      </div>
+
+      <!-- 1. NVIDIA Riva TTS & Voice Engine -->
+      <div class="settings-section">
+        <h4>1. Amy Simpson Voice Engine (NVIDIA Riva TTS &amp; Fallbacks)</h4>
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Primary TTS Backend</label>
+            <select id="setting-tts-provider" class="text-input">
+              <option value="riva_nim">NVIDIA Riva NIM API (Magpie / FastPitch REST)</option>
+              <option value="riva_grpc">Local NVIDIA Riva gRPC Server (localhost:50051)</option>
+              <option value="local_openai">Local Kokoro / Piper / OpenAI-Compatible TTS</option>
+              <option value="elevenlabs">ElevenLabs Turbo v2.5 API</option>
+              <option value="browser_neural">Windows / Edge Natural Neural Voice (Zero-Key)</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>NVIDIA API Key (nvapi-... shared with NIM LLM)</label>
+            <input id="setting-riva-api-key" type="password" class="text-input" placeholder="nvapi-..." />
+          </div>
+          <div class="form-field">
+            <label>NVIDIA Riva NIM / HTTP Endpoint</label>
+            <input id="setting-riva-endpoint" type="text" class="text-input" value="https://integrate.api.nvidia.com/v1/audio/synthesize" />
+          </div>
+          <div class="form-field">
+            <label>Local NVIDIA Riva gRPC URI (when using Local gRPC)</label>
+            <input id="setting-riva-grpc" type="text" class="text-input" value="localhost:50051" />
+          </div>
+          <div class="form-field">
+            <label>Riva Voice Name</label>
+            <input id="setting-riva-voice" type="text" class="text-input" value="English-US.Female-1" />
+          </div>
+          <div class="form-field">
+            <label>Riva TTS Model</label>
+            <input id="setting-riva-model" type="text" class="text-input" value="nvidia/magpie-tts-multilingual" />
+          </div>
+          <div class="form-field">
+            <label>Local Kokoro/OpenAI TTS Endpoint (Optional)</label>
+            <input id="setting-local-tts-endpoint" type="text" class="text-input" value="http://localhost:8880/v1/audio/speech" />
+          </div>
+          <div class="form-field">
+            <label>Fallback Browser Neural Voice</label>
+            <select id="setting-browser-voice" class="text-input">
+              <option value="">Auto-Select Best Natural Female Voice</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. AI LLM Script & Trivia Generator -->
+      <div class="settings-section">
+        <h4>2. Amy Simpson Commentary &amp; Trivia Generator (NVIDIA NIM + Offline Engine)</h4>
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Script Generation Mode</label>
+            <select id="setting-script-mode" class="text-input">
+              <option value="hybrid">AI LLM + Offline Rich Horizon Pulse Fallback (Recommended)</option>
+              <option value="offline_only">Offline Dynamic Horizon Pulse Engine Only (Instant, No Key)</option>
+              <option value="llm_only">AI LLM Always</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>AI LLM Provider</label>
+            <select id="setting-llm-provider" class="text-input">
+              <option value="nvidia_nim">NVIDIA NIM API (Preferred — Llama 3.3 / Nemotron)</option>
+              <option value="ollama">Ollama Local LLM (http://localhost:11434)</option>
+              <option value="openai">OpenAI API</option>
+              <option value="gemini">Google Gemini API</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>LLM API Key (nvapi-... / sk-... / AIza...)</label>
+            <input id="setting-llm-api-key" type="password" class="text-input" placeholder="nvapi-... (leave blank if using Ollama or Offline Engine)" />
+          </div>
+          <div class="form-field">
+            <label>LLM Model Name</label>
+            <input id="setting-llm-model" type="text" class="text-input" value="meta/llama-3.3-70b-instruct" />
+          </div>
+          <div class="form-field" style="grid-column: 1 / -1;">
+            <label>LLM Chat Completions Endpoint</label>
+            <input id="setting-llm-endpoint" type="text" class="text-input" value="https://integrate.api.nvidia.com/v1/chat/completions" />
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. Radio Crossfade & Spotify Integration -->
+      <div class="settings-section">
+        <h4>3. Auto-DJ Crossfade Timing &amp; Spotify Web Playback SDK</h4>
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Start Amy's Outro Link (Seconds Before Song Ends)</label>
+            <input id="setting-outro-lead" type="number" min="5" max="25" class="text-input" value="10" />
+          </div>
+          <div class="form-field">
+            <label>Music Ducking Level Under Amy's Voice (%)</label>
+            <input id="setting-duck-level" type="number" min="8" max="55" class="text-input" value="22" />
+          </div>
+          <div class="form-field">
+            <label>Spotify Developer Client ID (For Full Web Playback SDK / Remote Control)</label>
+            <input id="setting-spotify-client-id" type="text" class="text-input" placeholder="Paste Spotify Client ID (Redirect URI: http://127.0.0.1:8080/callback)" />
+          </div>
+          <div class="form-field">
+            <label>Spotify Playback Mode</label>
+            <select id="setting-spotify-mode" class="text-input">
+              <option value="auto">Web Playback SDK with Auto Fallback to Remote / Preview</option>
+              <option value="sdk_only">Prefer In-App Web Playback SDK</option>
+              <option value="remote_only">Spotify Connect Remote Control Only</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px;">
+        <button id="btn-test-amy-voice" class="btn btn-cyan">🔊 TEST AMY'S VOICE NOW</button>
+        <button id="btn-save-settings" class="btn btn-primary">💾 SAVE STUDIO CONFIGURATION</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Application Scripts -->
+  <script src="/js/amy-script-engine.js"></script>
+  <script src="/js/tts-engine.js"></script>
+  <script src="/js/spotify-manager.js"></script>
+  <script src="/js/local-playlist-manager.js"></script>
+  <script src="/js/radio-mixer.js"></script>
+  <script src="/js/procedural-visualizer.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# Horizon Radio - Optional Python Dependencies
+# Note: server.py runs out-of-the-box with Python's standard library!
+# Install these optional packages only if using a local NVIDIA Riva gRPC server
+# or advanced local audio tag parsing:
+
+nvidia-riva-client>=2.14.0
+mutagen>=1.47.0
+requests>=2.31.0

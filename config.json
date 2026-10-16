@@ -1,0 +1,17 @@
+{
+  "nvidiaNimApiKey": "",
+  "ttsProvider": "riva_nim",
+  "rivaEndpoint": "https://integrate.api.nvidia.com/v1/audio/synthesize",
+  "rivaGrpcUri": "localhost:50051",
+  "rivaVoice": "English-US.Female-1",
+  "rivaModel": "nvidia/magpie-tts-multilingual",
+  "scriptMode": "hybrid",
+  "llmProvider": "nvidia_nim",
+  "llmModel": "meta/llama-3.3-70b-instruct",
+  "llmEndpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+  "spotifyClientId": "",
+  "spotifyPlaybackMode": "auto",
+  "outroLeadSec": 10,
+  "musicDuckLevel": 0.22,
+  "visualizerMode": "highway"
+}
