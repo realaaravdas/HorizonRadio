@@ -1,10 +1,10 @@
 /**
  * Horizon Pulse Radio - Spotify Integration Manager
  * Supports:
- * 1. OAuth 2.0 PKCE Authentication (Client ID only, Redirect URI: http://127.0.0.1:8080/callback)
- * 2. Spotify Web Playback SDK (In-app streaming player with smooth volume ducking)
- * 3. Spotify Connect Remote Control API Fallback (Controls active Desktop/Phone Spotify app)
- * 4. Public Spotify Playlist URL Loader (Loads any public playlist immediately even without OAuth!)
+ * 1. Instant Zero-Key Spotify Playlist / Album / Track Loader (Resolves real studio audio for every song!)
+ * 2. OAuth 2.0 PKCE Authentication (Client ID only, Redirect URI: http://127.0.0.1:8080/callback)
+ * 3. Spotify Web Playback SDK (In-app streaming player with smooth volume ducking)
+ * 4. Spotify Connect Remote Control API Fallback
  */
 
 window.SpotifyManager = (function () {
@@ -47,7 +47,6 @@ window.SpotifyManager = (function () {
     return `${window.location.origin}/callback`;
   }
 
-  // PKCE Helpers
   function generateRandomString(length = 64) {
     const possible = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
     const values = crypto.getRandomValues(new Uint8Array(length));
@@ -170,21 +169,18 @@ window.SpotifyManager = (function () {
       } catch (_) {}
       sdkPlayer = null;
     }
-    notifyStatus({ connected: false, mode: "Public / Preview Mode" });
+    notifyStatus({ connected: false, mode: "Instant Stream Mode" });
   }
 
   function initWebPlaybackSDK() {
     if (!isTokenValid()) return;
-
     if (window.Spotify && window.Spotify.Player) {
       createPlayerInstance();
       return;
     }
-
     window.onSpotifyWebPlaybackSDKReady = () => {
       createPlayerInstance();
     };
-
     if (!document.getElementById("spotify-player-sdk-script")) {
       const script = document.createElement("script");
       script.id = "spotify-player-sdk-script";
@@ -227,7 +223,7 @@ window.SpotifyManager = (function () {
       notifyStatus({
         connected: true,
         sdkReady: false,
-        mode: "Remote Control / Preview Fallback (Non-Premium)",
+        mode: "Instant Stream Fallback",
       });
     });
 
@@ -238,30 +234,42 @@ window.SpotifyManager = (function () {
     sdkPlayer.connect();
   }
 
-  function parsePlaylistId(input) {
+  function parseSpotifyInput(input) {
     const trimmed = (input || "").trim();
-    if (!trimmed) return "";
-    // Match https://open.spotify.com/playlist/37i9dQZF1DX... or spotify:playlist:37i9dQZF1DX...
-    const urlMatch = trimmed.match(/playlist[/:]([a-zA-Z0-9]+)/);
-    if (urlMatch) return urlMatch[1];
-    if (/^[a-zA-Z0-9]{15,30}$/.test(trimmed)) return trimmed;
-    return "";
+    if (!trimmed) return null;
+    const match = trimmed.match(/(playlist|album|track)[/:]([a-zA-Z0-9]+)/i);
+    if (match) {
+      return { kind: match[1].toLowerCase(), id: match[2] };
+    }
+    if (/^[a-zA-Z0-9]{15,30}$/.test(trimmed)) {
+      return { kind: "playlist", id: trimmed };
+    }
+    return null;
   }
 
-  /**
-   * Fetches any Spotify playlist by URL, URI, or ID.
-   * Uses official Spotify Web API if OAuth is connected, and automatically falls back
-   * to the backend public playlist parser so ANY public playlist works immediately!
-   */
+  function attachAudioResolverUrl(tracks) {
+    return (tracks || []).map((t) => {
+      const resolveUrl = `/api/spotify/resolve-audio?artist=${encodeURIComponent(t.artist || "")}&title=${encodeURIComponent(t.title || "")}&preview=${encodeURIComponent(t.preview_url || "")}`;
+      return {
+        ...t,
+        audio_url: resolveUrl,
+        duration_ms: 30000, // Resolved stream duration when playing on Web Audio deck
+        full_duration_ms: t.duration_ms || 200000,
+      };
+    });
+  }
+
   async function fetchPlaylist(playlistUrlOrId) {
-    const playlistId = parsePlaylistId(playlistUrlOrId);
-    if (!playlistId) {
-      throw new Error("Invalid Spotify Playlist URL or URI. Example: https://open.spotify.com/playlist/37i9dQZF1DX4dyzvuaRJ0n");
+    const parsed = parseSpotifyInput(playlistUrlOrId);
+    if (!parsed) {
+      throw new Error(
+        "Paste any Spotify Playlist, Album, or Track link (e.g. https://open.spotify.com/playlist/37i9dQZF1DX4dyzvuaRJ0n)"
+      );
     }
 
-    if (isTokenValid()) {
+    if (isTokenValid() && parsed.kind === "playlist") {
       try {
-        const resp = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}`, {
+        const resp = await fetch(`https://api.spotify.com/v1/playlists/${parsed.id}`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         if (resp.ok) {
@@ -288,28 +296,30 @@ window.SpotifyManager = (function () {
 
           if (tracks.length > 0) {
             return {
-              id: playlistId,
+              id: parsed.id,
               name: data.name || "Spotify Playlist",
               cover_url: playlistCover,
-              tracks,
+              tracks: attachAudioResolverUrl(tracks),
               loadedVia: "Spotify Web API",
             };
           }
         }
       } catch (e) {
-        console.warn("[SpotifyManager] Web API playlist fetch failed, trying public embed parser:", e);
+        console.warn("[SpotifyManager] Web API playlist fetch failed, using embed parser:", e);
       }
     }
 
-    // Fallback to backend public playlist embed parser
-    const pubResp = await fetch(`/api/spotify/playlist-public?id=${encodeURIComponent(playlistId)}`);
+    const pubResp = await fetch(
+      `/api/spotify/playlist-public?id=${encodeURIComponent(parsed.id)}&kind=${encodeURIComponent(parsed.kind)}`
+    );
     const pubData = await pubResp.json();
     if (!pubResp.ok || pubData.error) {
-      throw new Error(pubData.error || "Could not load Spotify playlist.");
+      throw new Error(pubData.error || "Could not load Spotify link.");
     }
     return {
       ...pubData,
-      loadedVia: "Public Playlist Loader",
+      tracks: attachAudioResolverUrl(pubData.tracks || []),
+      loadedVia: "Spotify Direct Resolver",
     };
   }
 
@@ -328,18 +338,11 @@ window.SpotifyManager = (function () {
     }));
   }
 
-  /**
-   * Starts playing a Spotify track via:
-   * 1) Web Playback SDK device (if ready), or
-   * 2) Active Spotify Connect Remote device (if connected), or
-   * 3) Returns `{ usePreviewOrSynth: true }` so the local Web Audio deck handles it seamlessly.
-   */
   async function playSpotifyTrack(track, modePreference = "auto") {
     if (!isTokenValid() || !track.uri) {
-      return { playedOnSpotify: false, mode: "preview" };
+      return { playedOnSpotify: false, mode: "direct_stream" };
     }
 
-    // Try Web Playback SDK first (unless user forced remote control only)
     if (sdkReady && sdkDeviceId && modePreference !== "remote_only") {
       try {
         const resp = await fetch(
@@ -361,7 +364,6 @@ window.SpotifyManager = (function () {
       }
     }
 
-    // Fallback to Spotify Connect Remote Control API on active device
     try {
       const resp = await fetch("https://api.spotify.com/v1/me/player/play", {
         method: "PUT",
@@ -378,7 +380,7 @@ window.SpotifyManager = (function () {
       console.warn("[SpotifyManager] Remote control play failed:", err);
     }
 
-    return { playedOnSpotify: false, mode: "preview" };
+    return { playedOnSpotify: false, mode: "direct_stream" };
   }
 
   async function setSpotifyVolume(volume0to1) {

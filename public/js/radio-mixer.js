@@ -310,18 +310,11 @@ window.HorizonRadioMixer = (function () {
       }
     }
 
-    // Web Audio Deck playback (for local tracks, Spotify preview URLs, or synthesized backing stems)
+    // Web Audio Deck playback (for local tracks and Spotify direct audio resolver streams)
     activePlaybackMode = "web_audio";
-    let audioUrl = track.audio_url || track.preview_url || "";
+    let audioUrl = track.audio_url || "";
     if (!audioUrl) {
-      // Generate a unique festival synth backing stem so even Spotify tracks without preview_url play seamlessly
-      const hash = (track.title || "").split("").reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-      const roots = [98.0, 110.0, 116.54, 123.47, 130.81, 146.83];
-      audioUrl = window.LocalPlaylistManager.generateFestivalSynthTrackBlob({
-        durationSec: 38,
-        bpm: 118 + (hash % 12),
-        rootFreq: roots[hash % roots.length],
-      });
+      audioUrl = `/api/spotify/resolve-audio?artist=${encodeURIComponent(track.artist || "")}&title=${encodeURIComponent(track.title || "")}&preview=${encodeURIComponent(track.preview_url || "")}`;
       track.audio_url = audioUrl;
     }
 
@@ -522,16 +515,32 @@ window.HorizonRadioMixer = (function () {
       }
     }
     queue = list;
+    currentIndex = -1;
     preCachedSegment = null;
     emit("onQueueChange", { queue, currentIndex });
   }
 
   function appendTracksToQueue(tracksToAdd, { interleaveMix = true } = {}) {
     if (!tracksToAdd || tracksToAdd.length === 0) return;
+
+    // If the queue currently only has the default starter tracks, replace them with the user's tracks!
+    const onlyStarters = queue.length > 0 && queue.every((t) => t.isStarter);
+    if (onlyStarters) {
+      queue = [...tracksToAdd];
+      currentIndex = -1;
+      preCachedSegment = null;
+      emit("onQueueChange", { queue, currentIndex });
+      if (isPlaying) {
+        triggerRadioTransition({ reason: "playlist_loaded", targetIndex: 0 });
+      } else {
+        preCacheNextTransition(true);
+      }
+      return;
+    }
+
     if (!interleaveMix || queue.length === 0) {
       queue = [...queue, ...tracksToAdd];
     } else {
-      // Smart Forza Horizon Mix: interleave Spotify & Local tracks so both sources blend naturally
       const combined = [];
       const existing = [...queue];
       const incoming = [...tracksToAdd];
@@ -543,9 +552,7 @@ window.HorizonRadioMixer = (function () {
     }
     preCachedSegment = null;
     emit("onQueueChange", { queue, currentIndex });
-    if (isPlaying) {
-      preCacheNextTransition(true);
-    }
+    preCacheNextTransition(true);
   }
 
   function shuffleRemainingQueue() {

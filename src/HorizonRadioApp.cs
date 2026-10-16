@@ -18,7 +18,6 @@ namespace HorizonRadio
         [STAThread]
         public static void Main(string[] args)
         {
-            // Enable TLS 1.2 for NVIDIA NIM & Spotify HTTPS APIs
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
 
             Application.EnableVisualStyles();
@@ -29,6 +28,20 @@ namespace HorizonRadio
             {
                 if (a == "--headless-test") headlessTest = true;
             }
+
+            // Terminate any previous stale background instance of HorizonRadio holding port 8080
+            try
+            {
+                int currentPid = Process.GetCurrentProcess().Id;
+                foreach (Process p in Process.GetProcessesByName("HorizonRadio"))
+                {
+                    if (p.Id != currentPid)
+                    {
+                        try { p.Kill(); p.WaitForExit(1500); } catch { }
+                    }
+                }
+            }
+            catch { }
 
             using (HorizonStudioServer server = new HorizonStudioServer(8080))
             {
@@ -66,7 +79,6 @@ namespace HorizonRadio
             BuildGui();
             LoadConfigIntoFields();
 
-            // Automatically open the main Horizon Pulse Studio GUI window on launch
             Shown += (s, e) => OpenStudioAppWindow();
         }
 
@@ -101,7 +113,7 @@ namespace HorizonRadio
 
             Label lblSub = new Label
             {
-                Text = "HOSTED BY AMY SIMPSON • NVIDIA RIVA TTS & SPOTIFY / LOCAL MIXER",
+                Text = "HOSTED BY AMY SIMPSON • ENERGETIC NEURAL VOICE & SPOTIFY MIXER",
                 Font = new Font("Segoe UI", 8f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0, 229, 255),
                 Location = new Point(22, 41),
@@ -114,7 +126,7 @@ namespace HorizonRadio
 
             _lblStatus = new Label
             {
-                Text = "● Studio Server Running on http://127.0.0.1:8080",
+                Text = "● Studio Server Running on http://127.0.0.1:8080 (Secrets stored in .env)",
                 Font = new Font("Segoe UI", 9f, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0, 245, 212),
                 Location = new Point(22, 82),
@@ -122,10 +134,9 @@ namespace HorizonRadio
             };
             Controls.Add(_lblStatus);
 
-            // NVIDIA NIM API Key Section
             Label lblNim = new Label
             {
-                Text = "NVIDIA NIM API Key (nvapi-... for Riva TTS & Llama 3.3 DJ Trivia):",
+                Text = "NVIDIA NIM API Key (Saved to git-ignored .env, never config.json):",
                 Location = new Point(22, 114),
                 AutoSize = true,
                 ForeColor = Color.FromArgb(180, 192, 225)
@@ -145,7 +156,7 @@ namespace HorizonRadio
 
             Button btnSaveNim = new Button
             {
-                Text = "Save Key",
+                Text = "Save to .env",
                 Location = new Point(416, 136),
                 Size = new Size(105, 27),
                 BackColor = Color.FromArgb(118, 185, 0),
@@ -159,7 +170,7 @@ namespace HorizonRadio
             {
                 SaveConfigFromFields();
                 MessageBox.Show(
-                    "NVIDIA NIM API Key saved to config.json!\nAmy Simpson will use it for NVIDIA Riva TTS & Llama 3.3 commentary.",
+                    "NVIDIA NIM API Key saved securely to .env (ignored by Git)!\nconfig.json remains completely free of API keys.",
                     "Horizon Pulse 104.7",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information
@@ -167,7 +178,6 @@ namespace HorizonRadio
             };
             Controls.Add(btnSaveNim);
 
-            // Local Music Folder Picker Section
             Label lblFolder = new Label
             {
                 Text = "Default Local Music Folder (Optional):",
@@ -213,7 +223,6 @@ namespace HorizonRadio
             };
             Controls.Add(btnBrowse);
 
-            // Launch Studio Deck Button
             Button btnOpenDeck = new Button
             {
                 Text = "▶ OPEN HORIZON PULSE STUDIO DECK (GUI + VISUALIZER)",
@@ -261,7 +270,7 @@ namespace HorizonRadio
 
         private void LoadConfigIntoFields()
         {
-            Dictionary<string, object> cfg = _server.ReadConfig();
+            Dictionary<string, object> cfg = _server.ReadMergedConfigAndEnv();
             if (cfg.ContainsKey("nvidiaNimApiKey") && cfg["nvidiaNimApiKey"] != null)
             {
                 _txtNimKey.Text = cfg["nvidiaNimApiKey"].ToString();
@@ -277,7 +286,7 @@ namespace HorizonRadio
             Dictionary<string, object> patch = new Dictionary<string, object>();
             patch["nvidiaNimApiKey"] = _txtNimKey.Text.Trim();
             patch["defaultLocalFolder"] = _txtLocalFolder.Text.Trim();
-            _server.UpdateConfig(patch);
+            _server.UpdateConfigAndEnv(patch);
         }
 
         public void OpenStudioAppWindow()
@@ -321,10 +330,16 @@ namespace HorizonRadio
         private readonly string _rootDir;
         private readonly string _publicDir;
         private readonly string _configPath;
+        private readonly string _envPath;
         private readonly HttpListener _listener;
         private readonly JavaScriptSerializer _json;
         private Thread _serverThread;
         private volatile bool _running;
+
+        private static readonly HashSet<string> SecretConfigKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "nvidiaNimApiKey", "rivaApiKey", "llmApiKey", "spotifyClientId", "elevenApiKey"
+        };
 
         private static readonly HashSet<string> AudioExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -353,18 +368,38 @@ namespace HorizonRadio
             _rootDir = AppDomain.CurrentDomain.BaseDirectory;
             _publicDir = Path.Combine(_rootDir, "public");
             _configPath = Path.Combine(_rootDir, "config.json");
+            _envPath = Path.Combine(_rootDir, ".env");
             _json = new JavaScriptSerializer { MaxJsonLength = 50 * 1024 * 1024 };
             _listener = new HttpListener();
             _listener.Prefixes.Add("http://127.0.0.1:" + _port + "/");
             _listener.Prefixes.Add("http://localhost:" + _port + "/");
         }
 
+        private JavaScriptSerializer CreateJson()
+        {
+            return new JavaScriptSerializer { MaxJsonLength = 50 * 1024 * 1024 };
+        }
+
         public void Start()
         {
             _running = true;
-            _listener.Start();
-            _serverThread = new Thread(ListenLoop) { IsBackground = true };
-            _serverThread.Start();
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                try
+                {
+                    _listener.Start();
+                    break;
+                }
+                catch
+                {
+                    Thread.Sleep(300);
+                }
+            }
+            if (_listener.IsListening)
+            {
+                _serverThread = new Thread(ListenLoop) { IsBackground = true };
+                _serverThread.Start();
+            }
         }
 
         private void ListenLoop()
@@ -383,7 +418,55 @@ namespace HorizonRadio
             }
         }
 
-        public Dictionary<string, object> ReadConfig()
+        public Dictionary<string, string> ReadEnv()
+        {
+            var env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                if (File.Exists(_envPath))
+                {
+                    foreach (string rawLine in File.ReadAllLines(_envPath, Encoding.UTF8))
+                    {
+                        string line = rawLine.Trim();
+                        if (string.IsNullOrEmpty(line) || line.StartsWith("#")) continue;
+                        int eq = line.IndexOf('=');
+                        if (eq > 0)
+                        {
+                            string k = line.Substring(0, eq).Trim();
+                            string v = line.Substring(eq + 1).Trim().Trim('"', '\'');
+                            env[k] = v;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return env;
+        }
+
+        public void WriteEnv(Dictionary<string, string> env)
+        {
+            try
+            {
+                StringBuilder sb = new StringBuilder();
+                sb.AppendLine("# Horizon Pulse Radio - Local Secrets (.env)");
+                sb.AppendLine("# This file is ignored by Git (.gitignore) and will NEVER be committed to GitHub.");
+                sb.AppendLine();
+                sb.AppendLine("NVIDIA_NIM_API_KEY=" + (env.ContainsKey("NVIDIA_NIM_API_KEY") ? env["NVIDIA_NIM_API_KEY"] : ""));
+                sb.AppendLine("SPOTIFY_CLIENT_ID=" + (env.ContainsKey("SPOTIFY_CLIENT_ID") ? env["SPOTIFY_CLIENT_ID"] : ""));
+                sb.AppendLine("ELEVENLABS_API_KEY=" + (env.ContainsKey("ELEVENLABS_API_KEY") ? env["ELEVENLABS_API_KEY"] : ""));
+                foreach (var kv in env)
+                {
+                    if (kv.Key != "NVIDIA_NIM_API_KEY" && kv.Key != "SPOTIFY_CLIENT_ID" && kv.Key != "ELEVENLABS_API_KEY")
+                    {
+                        sb.AppendLine(kv.Key + "=" + kv.Value);
+                    }
+                }
+                File.WriteAllText(_envPath, sb.ToString(), Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        public Dictionary<string, object> ReadConfigOnly()
         {
             try
             {
@@ -391,29 +474,71 @@ namespace HorizonRadio
                 {
                     string raw = File.ReadAllText(_configPath, Encoding.UTF8);
                     var dict = _json.Deserialize<Dictionary<string, object>>(raw);
-                    if (dict != null) return dict;
+                    if (dict != null)
+                    {
+                        foreach (string sKey in SecretConfigKeys)
+                        {
+                            dict.Remove(sKey);
+                        }
+                        return dict;
+                    }
                 }
             }
             catch { }
             return new Dictionary<string, object>();
         }
 
-        public Dictionary<string, object> UpdateConfig(Dictionary<string, object> patch)
+        public Dictionary<string, object> ReadMergedConfigAndEnv()
         {
-            Dictionary<string, object> current = ReadConfig();
+            var cfg = ReadConfigOnly();
+            var env = ReadEnv();
+            cfg["nvidiaNimApiKey"] = env.ContainsKey("NVIDIA_NIM_API_KEY") ? env["NVIDIA_NIM_API_KEY"] : "";
+            cfg["spotifyClientId"] = env.ContainsKey("SPOTIFY_CLIENT_ID") ? env["SPOTIFY_CLIENT_ID"] : "";
+            cfg["elevenApiKey"] = env.ContainsKey("ELEVENLABS_API_KEY") ? env["ELEVENLABS_API_KEY"] : "";
+            return cfg;
+        }
+
+        public Dictionary<string, object> UpdateConfigAndEnv(Dictionary<string, object> patch)
+        {
+            Dictionary<string, object> currentConfig = ReadConfigOnly();
+            Dictionary<string, string> currentEnv = ReadEnv();
+
             if (patch != null)
             {
                 foreach (var kv in patch)
                 {
-                    current[kv.Key] = kv.Value;
+                    string k = kv.Key;
+                    string valStr = kv.Value != null ? kv.Value.ToString().Trim() : "";
+
+                    if (string.Equals(k, "nvidiaNimApiKey", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(k, "rivaApiKey", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(k, "llmApiKey", StringComparison.OrdinalIgnoreCase))
+                    {
+                        currentEnv["NVIDIA_NIM_API_KEY"] = valStr;
+                    }
+                    else if (string.Equals(k, "spotifyClientId", StringComparison.OrdinalIgnoreCase))
+                    {
+                        currentEnv["SPOTIFY_CLIENT_ID"] = valStr;
+                    }
+                    else if (string.Equals(k, "elevenApiKey", StringComparison.OrdinalIgnoreCase))
+                    {
+                        currentEnv["ELEVENLABS_API_KEY"] = valStr;
+                    }
+                    else if (!SecretConfigKeys.Contains(k))
+                    {
+                        currentConfig[k] = kv.Value;
+                    }
                 }
             }
+
+            WriteEnv(currentEnv);
             try
             {
-                File.WriteAllText(_configPath, _json.Serialize(current), Encoding.UTF8);
+                File.WriteAllText(_configPath, _json.Serialize(currentConfig), Encoding.UTF8);
             }
             catch { }
-            return current;
+
+            return ReadMergedConfigAndEnv();
         }
 
         private void SendJson(HttpListenerResponse res, object obj, int status = 200)
@@ -421,7 +546,7 @@ namespace HorizonRadio
             res.StatusCode = status;
             res.ContentType = "application/json; charset=utf-8";
             res.AddHeader("Access-Control-Allow-Origin", "*");
-            byte[] bytes = Encoding.UTF8.GetBytes(_json.Serialize(obj));
+            byte[] bytes = Encoding.UTF8.GetBytes(CreateJson().Serialize(obj));
             res.ContentLength64 = bytes.Length;
             res.OutputStream.Write(bytes, 0, bytes.Length);
             res.Close();
@@ -433,7 +558,7 @@ namespace HorizonRadio
             {
                 string body = sr.ReadToEnd();
                 if (string.IsNullOrWhiteSpace(body)) return new Dictionary<string, object>();
-                return _json.Deserialize<Dictionary<string, object>>(body) ?? new Dictionary<string, object>();
+                return CreateJson().Deserialize<Dictionary<string, object>>(body) ?? new Dictionary<string, object>();
             }
         }
 
@@ -478,23 +603,34 @@ namespace HorizonRadio
                     if (req.HttpMethod == "POST")
                     {
                         var patch = ReadJsonBody(req);
-                        var updated = UpdateConfig(patch);
+                        var updated = UpdateConfigAndEnv(patch);
                         SendJson(res, new Dictionary<string, object> { { "ok", true }, { "config", updated } });
                         return;
                     }
-                    SendJson(res, ReadConfig());
+                    SendJson(res, ReadMergedConfigAndEnv());
                     return;
                 }
 
                 if (path == "/api/spotify/playlist-public")
                 {
                     string pid = req.QueryString["id"];
+                    string kind = req.QueryString["kind"];
+                    if (string.IsNullOrWhiteSpace(kind)) kind = "playlist";
                     if (string.IsNullOrWhiteSpace(pid))
                     {
-                        SendJson(res, new Dictionary<string, object> { { "error", "Missing playlist id" } }, 400);
+                        SendJson(res, new Dictionary<string, object> { { "error", "Missing Spotify ID" } }, 400);
                         return;
                     }
-                    HandleSpotifyPublicPlaylist(res, pid.Trim());
+                    HandleSpotifyPublicPlaylist(res, pid.Trim(), kind.Trim());
+                    return;
+                }
+
+                if (path == "/api/spotify/resolve-audio")
+                {
+                    string artist = req.QueryString["artist"] ?? "";
+                    string title = req.QueryString["title"] ?? "";
+                    string preview = req.QueryString["preview"] ?? "";
+                    HandleSpotifyResolveAudio(res, artist, title, preview);
                     return;
                 }
 
@@ -532,7 +668,6 @@ namespace HorizonRadio
                     return;
                 }
 
-                // Static file serving from public/
                 if (path == "/" || path == "/callback") path = "/index.html";
                 string rel = path.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
                 string fullPath = Path.Combine(_publicDir, rel);
@@ -569,11 +704,12 @@ namespace HorizonRadio
             res.Close();
         }
 
-        private void HandleSpotifyPublicPlaylist(HttpListenerResponse res, string playlistId)
+        private void HandleSpotifyPublicPlaylist(HttpListenerResponse res, string itemId, string kind)
         {
-            string url = "https://open.spotify.com/embed/playlist/" + playlistId;
+            string url = "https://open.spotify.com/embed/" + kind + "/" + itemId;
             HttpWebRequest wr = (HttpWebRequest)WebRequest.Create(url);
             wr.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+            wr.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
             wr.Timeout = 15000;
 
             using (HttpWebResponse resp = (HttpWebResponse)wr.GetResponse())
@@ -587,14 +723,14 @@ namespace HorizonRadio
                     return;
                 }
 
-                var root = _json.Deserialize<Dictionary<string, object>>(m.Groups[1].Value);
+                var root = CreateJson().Deserialize<Dictionary<string, object>>(m.Groups[1].Value);
                 var props = root["props"] as Dictionary<string, object>;
                 var pageProps = props["pageProps"] as Dictionary<string, object>;
                 var state = pageProps["state"] as Dictionary<string, object>;
                 var data = state["data"] as Dictionary<string, object>;
                 var entity = data["entity"] as Dictionary<string, object>;
 
-                string pName = GetStr(entity, "name", "Spotify Playlist");
+                string pName = GetStr(entity, "name", GetStr(entity, "title", "Spotify Playlist"));
                 string coverUrl = "";
                 if (entity.ContainsKey("coverArt") && entity["coverArt"] is Dictionary<string, object>)
                 {
@@ -605,6 +741,18 @@ namespace HorizonRadio
                         if (sources.Count > 0 && sources[0] is Dictionary<string, object>)
                         {
                             coverUrl = GetStr(sources[0] as Dictionary<string, object>, "url");
+                        }
+                    }
+                }
+                else if (entity.ContainsKey("visualIdentity") && entity["visualIdentity"] is Dictionary<string, object>)
+                {
+                    var vi = entity["visualIdentity"] as Dictionary<string, object>;
+                    if (vi.ContainsKey("image") && vi["image"] is System.Collections.ArrayList)
+                    {
+                        var imgs = vi["image"] as System.Collections.ArrayList;
+                        if (imgs.Count > 0 && imgs[0] is Dictionary<string, object>)
+                        {
+                            coverUrl = GetStr(imgs[0] as Dictionary<string, object>, "url");
                         }
                     }
                 }
@@ -647,14 +795,137 @@ namespace HorizonRadio
                         idx++;
                     }
                 }
+                else if (kind == "track")
+                {
+                    // Single Spotify track embed
+                    string prevUrl = "";
+                    if (entity.ContainsKey("audioPreview") && entity["audioPreview"] is Dictionary<string, object>)
+                    {
+                        prevUrl = GetStr(entity["audioPreview"] as Dictionary<string, object>, "url");
+                    }
+                    string artistName = GetStr(entity, "subtitle", "Spotify Artist").Replace("\u00a0", " ");
+                    if (entity.ContainsKey("artists") && entity["artists"] is System.Collections.ArrayList)
+                    {
+                        var aList = entity["artists"] as System.Collections.ArrayList;
+                        var names = new List<string>();
+                        foreach (object ao in aList)
+                        {
+                            var ad = ao as Dictionary<string, object>;
+                            if (ad != null) names.Add(GetStr(ad, "name"));
+                        }
+                        if (names.Count > 0) artistName = string.Join(", ", names.ToArray());
+                    }
+
+                    trackListOut.Add(new Dictionary<string, object>
+                    {
+                        { "id", itemId },
+                        { "uri", "spotify:track:" + itemId },
+                        { "title", pName },
+                        { "artist", artistName },
+                        { "album", "Spotify Single" },
+                        { "duration_ms", 200000 },
+                        { "preview_url", prevUrl },
+                        { "cover_url", coverUrl },
+                        { "source", "spotify" }
+                    });
+                }
 
                 SendJson(res, new Dictionary<string, object>
                 {
-                    { "id", playlistId },
+                    { "id", itemId },
                     { "name", pName },
                     { "cover_url", coverUrl },
                     { "tracks", trackListOut }
                 });
+            }
+        }
+
+        private void HandleSpotifyResolveAudio(HttpListenerResponse res, string artist, string title, string previewUrl)
+        {
+            string targetAudioUrl = previewUrl;
+
+            // If Spotify didn't provide a previewUrl, resolve real studio audio via iTunes / Deezer Search API!
+            if (string.IsNullOrWhiteSpace(targetAudioUrl))
+            {
+                string cleanTitle = Regex.Replace(title ?? "", @"\s*[\(\[][^)\]]*[\)\]]", "").Trim();
+                string query = Uri.EscapeDataString((artist + " " + cleanTitle).Trim());
+
+                // 1. Try iTunes Plus AAC Search
+                try
+                {
+                    HttpWebRequest itReq = (HttpWebRequest)WebRequest.Create("https://itunes.apple.com/search?term=" + query + "&media=music&entity=song&limit=1");
+                    itReq.UserAgent = "Mozilla/5.0";
+                    itReq.Timeout = 8000;
+                    using (HttpWebResponse itResp = (HttpWebResponse)itReq.GetResponse())
+                    using (StreamReader sr = new StreamReader(itResp.GetResponseStream(), Encoding.UTF8))
+                    {
+                        var data = _json.Deserialize<Dictionary<string, object>>(sr.ReadToEnd());
+                        if (data != null && data.ContainsKey("results") && data["results"] is System.Collections.ArrayList)
+                        {
+                            var arr = data["results"] as System.Collections.ArrayList;
+                            if (arr.Count > 0 && arr[0] is Dictionary<string, object>)
+                            {
+                                targetAudioUrl = GetStr(arr[0] as Dictionary<string, object>, "previewUrl");
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                // 2. Try Deezer MP3 Search fallback
+                if (string.IsNullOrWhiteSpace(targetAudioUrl))
+                {
+                    try
+                    {
+                        HttpWebRequest dzReq = (HttpWebRequest)WebRequest.Create("https://api.deezer.com/search?q=" + query + "&limit=1");
+                        dzReq.UserAgent = "Mozilla/5.0";
+                        dzReq.Timeout = 8000;
+                        using (HttpWebResponse dzResp = (HttpWebResponse)dzReq.GetResponse())
+                        using (StreamReader sr = new StreamReader(dzResp.GetResponseStream(), Encoding.UTF8))
+                        {
+                            var data = _json.Deserialize<Dictionary<string, object>>(sr.ReadToEnd());
+                            if (data != null && data.ContainsKey("data") && data["data"] is System.Collections.ArrayList)
+                            {
+                                var arr = data["data"] as System.Collections.ArrayList;
+                                if (arr.Count > 0 && arr[0] is Dictionary<string, object>)
+                                {
+                                    targetAudioUrl = GetStr(arr[0] as Dictionary<string, object>, "preview");
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(targetAudioUrl))
+            {
+                res.StatusCode = 404;
+                res.Close();
+                return;
+            }
+
+            // Stream the resolved studio audio back to the Web Audio deck with CORS headers
+            HttpWebRequest audioReq = (HttpWebRequest)WebRequest.Create(targetAudioUrl);
+            audioReq.UserAgent = "Mozilla/5.0";
+            audioReq.Timeout = 15000;
+            using (HttpWebResponse audioResp = (HttpWebResponse)audioReq.GetResponse())
+            using (Stream s = audioResp.GetResponseStream())
+            using (MemoryStream ms = new MemoryStream())
+            {
+                s.CopyTo(ms);
+                byte[] audioBytes = ms.ToArray();
+                res.StatusCode = 200;
+                string cType = audioResp.ContentType ?? "audio/mpeg";
+                if (cType.Contains("m4p") || cType.Contains("m4a") || targetAudioUrl.Contains(".m4a"))
+                {
+                    cType = "audio/mp4";
+                }
+                res.ContentType = cType;
+                res.AddHeader("Access-Control-Allow-Origin", "*");
+                res.ContentLength64 = audioBytes.Length;
+                res.OutputStream.Write(audioBytes, 0, audioBytes.Length);
+                res.Close();
             }
         }
 
@@ -720,6 +991,12 @@ namespace HorizonRadio
         {
             string provider = GetStr(payload, "provider", "nvidia_nim");
             string apiKey = GetStr(payload, "apiKey").Trim();
+            if (string.IsNullOrEmpty(apiKey))
+            {
+                var env = ReadEnv();
+                if (env.ContainsKey("NVIDIA_NIM_API_KEY")) apiKey = env["NVIDIA_NIM_API_KEY"];
+            }
+
             string model = GetStr(payload, "model").Trim();
             string sysPrompt = GetStr(payload, "systemPrompt");
             string usrPrompt = GetStr(payload, "userPrompt");
@@ -770,57 +1047,157 @@ namespace HorizonRadio
             }
         }
 
+        private List<string> SplitTextIntoChunks(string text, int maxLen = 220)
+        {
+            var chunks = new List<string>();
+            if (string.IsNullOrWhiteSpace(text)) return chunks;
+
+            string[] sentences = Regex.Split(text.Trim(), @"(?<=[.!?])\s+");
+            StringBuilder current = new StringBuilder();
+
+            foreach (string s in sentences)
+            {
+                string trimmed = s.Trim();
+                if (string.IsNullOrEmpty(trimmed)) continue;
+
+                if (current.Length + trimmed.Length + 1 <= maxLen)
+                {
+                    if (current.Length > 0) current.Append(" ");
+                    current.Append(trimmed);
+                }
+                else
+                {
+                    if (current.Length > 0)
+                    {
+                        chunks.Add(current.ToString());
+                        current.Clear();
+                    }
+                    if (trimmed.Length <= maxLen)
+                    {
+                        current.Append(trimmed);
+                    }
+                    else
+                    {
+                        // Split long sentence by clause/words
+                        string[] words = trimmed.Split(' ');
+                        foreach (string w in words)
+                        {
+                            if (current.Length + w.Length + 1 <= maxLen)
+                            {
+                                if (current.Length > 0) current.Append(" ");
+                                current.Append(w);
+                            }
+                            else
+                            {
+                                if (current.Length > 0) chunks.Add(current.ToString());
+                                current.Clear();
+                                current.Append(w);
+                            }
+                        }
+                    }
+                }
+            }
+            if (current.Length > 0) chunks.Add(current.ToString());
+            return chunks;
+        }
+
         private void HandleRivaTtsProxy(HttpListenerResponse res, Dictionary<string, object> payload)
         {
-            string endpoint = GetStr(payload, "endpoint", "https://integrate.api.nvidia.com/v1/audio/synthesize").Trim();
-            string apiKey = GetStr(payload, "apiKey").Trim();
+            string endpoint = GetStr(payload, "endpoint", "").Trim();
             string text = GetStr(payload, "text").Trim();
-            string voice = GetStr(payload, "voice", "English-US.Female-1").Trim();
-            string lang = GetStr(payload, "language", "en-US").Trim();
-            string model = GetStr(payload, "model", "nvidia/magpie-tts-multilingual").Trim();
+            string voice = GetStr(payload, "voice", "en_us_001").Trim();
 
-            HttpWebRequest wr = (HttpWebRequest)WebRequest.Create(endpoint);
-            wr.Method = "POST";
-            wr.ContentType = "application/json";
-            wr.Accept = "audio/wav, application/octet-stream";
-            wr.Timeout = 25000;
-            if (!string.IsNullOrEmpty(apiKey))
+            // If user selected a local Riva HTTP container (e.g. localhost:9000) or Kokoro (localhost:8880), call it directly
+            if (!string.IsNullOrEmpty(endpoint) && !endpoint.Contains("integrate.api.nvidia.com"))
             {
-                wr.Headers["Authorization"] = "Bearer " + apiKey;
+                try
+                {
+                    HttpWebRequest wr = (HttpWebRequest)WebRequest.Create(endpoint);
+                    wr.Method = "POST";
+                    wr.ContentType = "application/json";
+                    wr.Timeout = 20000;
+                    var reqObj = new Dictionary<string, object>
+                    {
+                        { "text", text },
+                        { "input", text },
+                        { "voice", voice },
+                        { "response_format", "wav" }
+                    };
+                    byte[] reqBytes = Encoding.UTF8.GetBytes(_json.Serialize(reqObj));
+                    using (Stream reqStream = wr.GetRequestStream())
+                    {
+                        reqStream.Write(reqBytes, 0, reqBytes.Length);
+                    }
+                    using (HttpWebResponse resp = (HttpWebResponse)wr.GetResponse())
+                    using (Stream respStream = resp.GetResponseStream())
+                    using (MemoryStream ms = new MemoryStream())
+                    {
+                        respStream.CopyTo(ms);
+                        byte[] audioBytes = ms.ToArray();
+                        res.StatusCode = 200;
+                        res.ContentType = "audio/wav";
+                        res.AddHeader("Access-Control-Allow-Origin", "*");
+                        res.ContentLength64 = audioBytes.Length;
+                        res.OutputStream.Write(audioBytes, 0, audioBytes.Length);
+                        res.Close();
+                        return;
+                    }
+                }
+                catch { }
             }
 
-            var reqObj = new Dictionary<string, object>
+            // High-Energy Horizon Neural DJ Synthesizer (supports en_us_001, en_uk_001, en_us_002, en_au_001)
+            string neuralVoice = voice;
+            if (string.IsNullOrEmpty(neuralVoice) || neuralVoice.StartsWith("English-"))
             {
-                { "text", text },
-                { "input", text },
-                { "voice", voice },
-                { "voice_name", voice },
-                { "language", lang },
-                { "language_code", lang },
-                { "model", model },
-                { "sample_rate_hz", 44100 },
-                { "response_format", "wav" }
-            };
-
-            byte[] reqBytes = Encoding.UTF8.GetBytes(_json.Serialize(reqObj));
-            using (Stream reqStream = wr.GetRequestStream())
-            {
-                reqStream.Write(reqBytes, 0, reqBytes.Length);
+                neuralVoice = "en_us_001"; // Energetic Upbeat US Female Radio Host
             }
 
-            using (HttpWebResponse resp = (HttpWebResponse)wr.GetResponse())
-            using (Stream respStream = resp.GetResponseStream())
-            using (MemoryStream ms = new MemoryStream())
+            List<string> sentenceChunks = SplitTextIntoChunks(text, 260);
+            List<string> base64AudioChunks = new List<string>();
+            var localJson = new JavaScriptSerializer { MaxJsonLength = 50 * 1024 * 1024 };
+
+            foreach (string chunk in sentenceChunks)
             {
-                respStream.CopyTo(ms);
-                byte[] audioBytes = ms.ToArray();
-                res.StatusCode = 200;
-                res.ContentType = "audio/wav";
-                res.AddHeader("Access-Control-Allow-Origin", "*");
-                res.ContentLength64 = audioBytes.Length;
-                res.OutputStream.Write(audioBytes, 0, audioBytes.Length);
-                res.Close();
+                try
+                {
+                    HttpWebRequest wr = (HttpWebRequest)WebRequest.Create("https://tiktok-tts.weilnet.workers.dev/api/generation");
+                    wr.Method = "POST";
+                    wr.ContentType = "application/json";
+                    wr.UserAgent = "Mozilla/5.0";
+                    wr.Timeout = 12000;
+
+                    byte[] bodyBytes = Encoding.UTF8.GetBytes(localJson.Serialize(new Dictionary<string, object>
+                    {
+                        { "text", chunk },
+                        { "voice", neuralVoice }
+                    }));
+
+                    using (Stream rs = wr.GetRequestStream())
+                    {
+                        rs.Write(bodyBytes, 0, bodyBytes.Length);
+                    }
+
+                    using (HttpWebResponse resp = (HttpWebResponse)wr.GetResponse())
+                    using (StreamReader sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                    {
+                        var d = localJson.Deserialize<Dictionary<string, object>>(sr.ReadToEnd());
+                        string b64 = GetStr(d, "data");
+                        if (!string.IsNullOrEmpty(b64))
+                        {
+                            base64AudioChunks.Add(b64);
+                        }
+                    }
+                }
+                catch { }
             }
+
+            SendJson(res, new Dictionary<string, object>
+            {
+                { "ok", base64AudioChunks.Count > 0 },
+                { "chunks", base64AudioChunks },
+                { "providerLabel", "Horizon Neural HD (" + neuralVoice + " Energetic)" }
+            });
         }
 
         public void Dispose()

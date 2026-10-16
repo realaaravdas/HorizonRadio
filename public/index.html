@@ -37,7 +37,7 @@
         <span class="nvidia-badge">NVIDIA NIM + RIVA</span>
         <div class="nim-quick-text">
           <strong>Quick API Key Setup:</strong> Paste your <code>nvapi-...</code> key here to power both <strong>NVIDIA Riva TTS</strong> &amp; <strong>Llama 3.3 DJ Trivia</strong>
-          <span>(Saved automatically to <code>config.json</code>)</span>
+          <span>(Saved exclusively to git-ignored <code>.env</code>)</span>
         </div>
       </div>
       <div class="nim-quick-controls">
@@ -311,8 +311,14 @@
             <input id="setting-riva-grpc" type="text" class="text-input" value="localhost:50051" />
           </div>
           <div class="form-field">
-            <label>Riva Voice Name</label>
-            <input id="setting-riva-voice" type="text" class="text-input" value="English-US.Female-1" />
+            <label>Amy Simpson Voice Style / Persona</label>
+            <select id="setting-riva-voice" class="text-input">
+              <option value="en_us_001">Horizon Pulse Energetic DJ (Upbeat US - Recommended)</option>
+              <option value="en_uk_001">Horizon Festival UK Presenter (British)</option>
+              <option value="en_us_002">Horizon Warm Studio DJ (US)</option>
+              <option value="en_au_001">Horizon Festival Outback DJ (Australian)</option>
+              <option value="English-US.Female-1">Local Riva Container (English-US.Female-1)</option>
+            </select>
           </div>
           <div class="form-field">
             <label>Riva TTS Model</label>

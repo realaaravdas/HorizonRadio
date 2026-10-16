@@ -39,9 +39,82 @@ except ImportError:
     pass
 
 PORT = int(os.environ.get("HORIZON_PORT", 8080))
-PUBLIC_DIR = Path(__file__).parent / "public"
+ROOT_DIR = Path(__file__).parent
+PUBLIC_DIR = ROOT_DIR / "public"
+CONFIG_PATH = ROOT_DIR / "config.json"
+ENV_PATH = ROOT_DIR / ".env"
+SECRET_CONFIG_KEYS = {"nvidiaNimApiKey", "rivaApiKey", "llmApiKey", "spotifyClientId", "elevenApiKey"}
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".opus", ".webm"}
 PLAYLIST_EXTENSIONS = {".m3u", ".m3u8", ".pls"}
+
+
+def read_env() -> dict:
+    """Read key-value secrets from git-ignored .env file."""
+    env = {}
+    if ENV_PATH.exists():
+        for raw_line in ENV_PATH.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+def write_env(env: dict):
+    """Write secrets exclusively to git-ignored .env file."""
+    lines = [
+        "# Horizon Pulse Radio - Local Secrets (.env)",
+        "# This file is ignored by Git (.gitignore) and will NEVER be committed to GitHub.",
+        "",
+        f"NVIDIA_NIM_API_KEY={env.get('NVIDIA_NIM_API_KEY', '')}",
+        f"SPOTIFY_CLIENT_ID={env.get('SPOTIFY_CLIENT_ID', '')}",
+        f"ELEVENLABS_API_KEY={env.get('ELEVENLABS_API_KEY', '')}",
+    ]
+    for k, v in env.items():
+        if k not in {"NVIDIA_NIM_API_KEY", "SPOTIFY_CLIENT_ID", "ELEVENLABS_API_KEY"}:
+            lines.append(f"{k}={v}")
+    ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def read_config_only() -> dict:
+    """Read non-sensitive settings from config.json, stripping any secret keys."""
+    if CONFIG_PATH.exists():
+        try:
+            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            for sk in SECRET_CONFIG_KEYS:
+                data.pop(sk, None)
+            return data
+        except Exception:
+            pass
+    return {}
+
+
+def read_merged_config_and_env() -> dict:
+    cfg = read_config_only()
+    env = read_env()
+    cfg["nvidiaNimApiKey"] = env.get("NVIDIA_NIM_API_KEY", "")
+    cfg["spotifyClientId"] = env.get("SPOTIFY_CLIENT_ID", "")
+    cfg["elevenApiKey"] = env.get("ELEVENLABS_API_KEY", "")
+    return cfg
+
+
+def update_config_and_env(patch: dict) -> dict:
+    cfg = read_config_only()
+    env = read_env()
+    for k, v in (patch or {}).items():
+        val_str = str(v).strip() if v is not None else ""
+        if k in {"nvidiaNimApiKey", "rivaApiKey", "llmApiKey"}:
+            env["NVIDIA_NIM_API_KEY"] = val_str
+        elif k == "spotifyClientId":
+            env["SPOTIFY_CLIENT_ID"] = val_str
+        elif k == "elevenApiKey":
+            env["ELEVENLABS_API_KEY"] = val_str
+        elif k not in SECRET_CONFIG_KEYS:
+            cfg[k] = v
+    write_env(env)
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    return read_merged_config_and_env()
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -179,87 +252,98 @@ def synthesize_riva_grpc(text: str, server_url: str, voice_name: str, language_c
     return wav_header + pcm_bytes
 
 
-def synthesize_riva_http(payload: dict):
+def split_text_into_chunks(text: str, max_len: int = 260) -> list:
+    chunks = []
+    if not text or not text.strip():
+        return chunks
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    current = ""
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        if len(current) + len(s) + 1 <= max_len:
+            current = f"{current} {s}".strip() if current else s
+        else:
+            if current:
+                chunks.append(current)
+            current = s
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def synthesize_energetic_neural_chunks(text: str, voice: str = "en_us_001") -> list:
+    neural_voice = voice if (voice and not voice.startswith("English-")) else "en_us_001"
+    sentence_chunks = split_text_into_chunks(text, 260)
+    b64_chunks = []
+    for chunk in sentence_chunks:
+        body = json.dumps({"text": chunk, "voice": neural_voice}).encode("utf-8")
+        req = urllib.request.Request(
+            "https://tiktok-tts.weilnet.workers.dev/api/generation",
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            b64 = data.get("data", "")
+            if b64:
+                b64_chunks.append(b64)
+    return b64_chunks, neural_voice
+
+
+def resolve_spotify_audio_stream(artist: str, title: str, preview_url: str):
+    target_url = (preview_url or "").strip()
+    if not target_url:
+        clean_title = re.sub(r"\s*[\(\[][^)\]]*[\)\]]", "", title or "").strip()
+        q = urllib.parse.quote(f"{artist} {clean_title}".strip())
+        # 1. Try iTunes Plus AAC Search
+        try:
+            it_req = urllib.request.Request(
+                f"https://itunes.apple.com/search?term={q}&media=music&entity=song&limit=1",
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            with urllib.request.urlopen(it_req, timeout=8) as r:
+                data = json.loads(r.read().decode("utf-8"))
+                results = data.get("results", [])
+                if results:
+                    target_url = results[0].get("previewUrl", "")
+        except Exception:
+            pass
+
+        # 2. Try Deezer MP3 Search
+        if not target_url:
+            try:
+                dz_req = urllib.request.Request(
+                    f"https://api.deezer.com/search?q={q}&limit=1",
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                with urllib.request.urlopen(dz_req, timeout=8) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+                    items = data.get("data", [])
+                    if items:
+                        target_url = items[0].get("preview", "")
+            except Exception:
+                pass
+
+    if not target_url:
+        raise ValueError("Could not resolve audio stream for track")
+
+    req = urllib.request.Request(target_url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        audio_bytes = resp.read()
+        c_type = resp.headers.get("Content-Type", "audio/mpeg")
+        if "m4p" in c_type or "m4a" in c_type or ".m4a" in target_url:
+            c_type = "audio/mp4"
+        return audio_bytes, c_type
+
+
+def fetch_spotify_public_playlist(item_id: str, kind: str = "playlist"):
     """
-    Synthesize speech via NVIDIA NIM Riva TTS HTTP API (Magpie-TTS / FastPitch)
-    or an OpenAI-compatible / Local NIM Riva HTTP container.
+    Fetches public playlist, album, or track metadata from Spotify's embed page.
     """
-    text = payload.get("text", "").strip()
-    endpoint = payload.get("endpoint", "https://integrate.api.nvidia.com/v1/audio/synthesize").strip()
-    api_key = payload.get("apiKey", "").strip()
-    voice = payload.get("voice", "English-US.Female-1").strip()
-    language = payload.get("language", "en-US").strip()
-    model = payload.get("model", "nvidia/magpie-tts-multilingual").strip()
-
-    headers = {
-        "Accept": "audio/wav, application/octet-stream, application/json",
-        "User-Agent": "HorizonRadio/1.0",
-    }
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    # Check if endpoint uses OpenAI-style /v1/audio/speech or NVIDIA NIM /v1/audio/synthesize
-    if endpoint.endswith("/audio/speech"):
-        body = json.dumps({
-            "model": model or "tts-1-hd",
-            "input": text,
-            "voice": voice or "nova",
-            "response_format": "wav",
-        }).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            return resp.read(), resp.headers.get("Content-Type", "audio/wav")
-
-    # Try NVIDIA NIM Riva TTS multipart/form-data or JSON format
-    boundary = f"----HorizonRadioBoundary{int(time.time() * 1000)}"
-    fields = {
-        "language": language,
-        "voice": voice,
-        "text": text,
-        "sample_rate_hz": "44100",
-        "encoding": "LINEAR_PCM",
-    }
-    lines = []
-    for k, v in fields.items():
-        lines.append(f"--{boundary}".encode("utf-8"))
-        lines.append(f'Content-Disposition: form-data; name="{k}"'.encode("utf-8"))
-        lines.append(b"")
-        lines.append(str(v).encode("utf-8"))
-    lines.append(f"--{boundary}--".encode("utf-8"))
-    lines.append(b"")
-    multipart_body = b"\r\n".join(lines)
-
-    try:
-        mp_headers = dict(headers)
-        mp_headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
-        req = urllib.request.Request(endpoint, data=multipart_body, headers=mp_headers, method="POST")
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            return resp.read(), resp.headers.get("Content-Type", "audio/wav")
-    except urllib.error.HTTPError as e:
-        # Fallback to JSON payload for local Riva HTTP bridges / NIM containers that expect JSON
-        json_body = json.dumps({
-            "text": text,
-            "voice": voice,
-            "voice_name": voice,
-            "language": language,
-            "language_code": language,
-            "model": model,
-            "sample_rate_hz": 44100,
-        }).encode("utf-8")
-        json_headers = dict(headers)
-        json_headers["Content-Type"] = "application/json"
-        req2 = urllib.request.Request(endpoint, data=json_body, headers=json_headers, method="POST")
-        with urllib.request.urlopen(req2, timeout=25) as resp2:
-            return resp2.read(), resp2.headers.get("Content-Type", "audio/wav")
-
-
-def fetch_spotify_public_playlist(playlist_id: str):
-    """
-    Fetches public playlist metadata & tracklist from Spotify's public embed page
-    so users can immediately load any public Spotify playlist URL even before OAuth!
-    """
-    embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
+    embed_url = f"https://open.spotify.com/embed/{kind}/{item_id}"
     req = urllib.request.Request(
         embed_url,
         headers={
@@ -272,10 +356,9 @@ def fetch_spotify_public_playlist(playlist_id: str):
     with urllib.request.urlopen(req, timeout=15) as resp:
         html = resp.read().decode("utf-8", errors="ignore")
 
-    # Look for __NEXT_DATA__ JSON inside the embed page
     match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.S)
     if not match:
-        raise ValueError("Could not parse public playlist embed data from Spotify.")
+        raise ValueError("Could not parse public embed data from Spotify.")
 
     data = json.loads(match.group(1))
     entity = (
@@ -286,13 +369,15 @@ def fetch_spotify_public_playlist(playlist_id: str):
         .get("entity", {})
     )
     if not entity:
-        raise ValueError("Playlist entity not found in Spotify embed response.")
+        raise ValueError("Entity not found in Spotify embed response.")
 
     playlist_name = entity.get("name") or entity.get("title") or "Spotify Playlist"
     cover_art = ""
     visual = entity.get("coverArt", {}).get("sources", [])
     if visual:
         cover_art = visual[0].get("url", "")
+    elif entity.get("visualIdentity", {}).get("image"):
+        cover_art = entity["visualIdentity"]["image"][0].get("url", "")
 
     track_list = entity.get("trackList", [])
     tracks = []
@@ -313,8 +398,22 @@ def fetch_spotify_public_playlist(playlist_id: str):
             "source": "spotify",
         })
 
+    if not tracks and kind == "track":
+        audio_preview = entity.get("audioPreview", {}) or {}
+        tracks.append({
+            "id": item_id,
+            "uri": f"spotify:track:{item_id}",
+            "title": playlist_name,
+            "artist": (entity.get("subtitle") or "Spotify Artist").replace("\u00a0", " "),
+            "album": "Spotify Single",
+            "duration_ms": 200000,
+            "preview_url": audio_preview.get("url", ""),
+            "cover_url": cover_art,
+            "source": "spotify",
+        })
+
     return {
-        "id": playlist_id,
+        "id": item_id,
         "name": playlist_name,
         "cover_url": cover_art,
         "tracks": tracks,
@@ -326,7 +425,6 @@ class HorizonRequestHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(PUBLIC_DIR), **kwargs)
 
     def log_message(self, fmt, *args):
-        # Clean concise console logging
         sys.stdout.write(f"[HorizonRadio] {self.address_string()} - {fmt % args}\n")
 
     def send_json(self, data: dict, status: int = 200):
@@ -359,24 +457,36 @@ class HorizonRequestHandler(SimpleHTTPRequestHandler):
             })
 
         if path == "/api/config":
-            cfg_path = Path(__file__).parent / "config.json"
-            if cfg_path.exists():
-                try:
-                    return self.send_json(json.loads(cfg_path.read_text(encoding="utf-8")))
-                except Exception:
-                    pass
-            return self.send_json({})
+            return self.send_json(read_merged_config_and_env())
 
         if path == "/api/spotify/playlist-public":
             qs = urllib.parse.parse_qs(parsed.query)
             playlist_id = (qs.get("id") or [""])[0].strip()
+            kind = (qs.get("kind") or ["playlist"])[0].strip()
             if not playlist_id:
                 return self.send_json({"error": "Missing playlist id"}, 400)
             try:
-                result = fetch_spotify_public_playlist(playlist_id)
+                result = fetch_spotify_public_playlist(playlist_id, kind)
                 return self.send_json(result)
             except Exception as e:
                 return self.send_json({"error": str(e)}, 502)
+
+        if path == "/api/spotify/resolve-audio":
+            qs = urllib.parse.parse_qs(parsed.query)
+            artist = (qs.get("artist") or [""])[0]
+            title = (qs.get("title") or [""])[0]
+            preview = (qs.get("preview") or [""])[0]
+            try:
+                audio_bytes, c_type = resolve_spotify_audio_stream(artist, title, preview)
+                self.send_response(200)
+                self.send_header("Content-Type", c_type)
+                self.send_header("Content-Length", str(len(audio_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(audio_bytes)
+                return
+            except Exception as e:
+                return self.send_json({"error": str(e)}, 404)
 
         if path == "/api/local/stream":
             qs = urllib.parse.parse_qs(parsed.query)
@@ -389,7 +499,6 @@ class HorizonRequestHandler(SimpleHTTPRequestHandler):
             return self.serve_audio_file_with_range(fpath)
 
         if path == "/callback" or path.startswith("/callback"):
-            # Serve index.html so the SPA handles the Spotify OAuth PKCE code
             self.path = "/index.html"
 
         return super().do_GET()
@@ -405,16 +514,8 @@ class HorizonRequestHandler(SimpleHTTPRequestHandler):
             payload = {}
 
         if path == "/api/config":
-            cfg_path = Path(__file__).parent / "config.json"
-            existing = {}
-            if cfg_path.exists():
-                try:
-                    existing = json.loads(cfg_path.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-            existing.update(payload)
-            cfg_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-            return self.send_json({"ok": True, "config": existing})
+            updated = update_config_and_env(payload)
+            return self.send_json({"ok": True, "config": updated})
 
         if path == "/api/local/scan":
             folder_or_file = payload.get("path", "")
@@ -425,7 +526,7 @@ class HorizonRequestHandler(SimpleHTTPRequestHandler):
                 return self.send_json({"ok": False, "error": str(e)}, 400)
 
         if path == "/api/tts/riva":
-            mode = payload.get("mode", "nim_http")  # 'grpc' or 'nim_http'
+            mode = payload.get("mode", "nim_http")
             text = payload.get("text", "").strip()
             if not text:
                 return self.send_json({"error": "Missing text for TTS"}, 400)
@@ -437,20 +538,20 @@ class HorizonRequestHandler(SimpleHTTPRequestHandler):
                         voice_name=payload.get("voice", "English-US.Female-1"),
                         language_code=payload.get("language", "en-US"),
                     )
-                    content_type = "audio/wav"
-                else:
-                    audio_bytes, content_type = synthesize_riva_http(payload)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/wav")
+                    self.send_header("Content-Length", str(len(audio_bytes)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(audio_bytes)
+                    return
 
-                self.send_response(200)
-                self.send_header("Content-Type", content_type or "audio/wav")
-                self.send_header("Content-Length", str(len(audio_bytes)))
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                self.wfile.write(audio_bytes)
-                return
-            except urllib.error.HTTPError as he:
-                err_body = he.read().decode("utf-8", errors="ignore")
-                return self.send_json({"error": f"HTTP {he.code}: {err_body or he.reason}"}, he.code)
+                b64_chunks, nv = synthesize_energetic_neural_chunks(text, payload.get("voice", "en_us_001"))
+                return self.send_json({
+                    "ok": len(b64_chunks) > 0,
+                    "chunks": b64_chunks,
+                    "providerLabel": f"Horizon Neural HD ({nv} Energetic)",
+                })
             except Exception as e:
                 return self.send_json({"error": str(e)}, 500)
 
@@ -462,7 +563,7 @@ class HorizonRequestHandler(SimpleHTTPRequestHandler):
     def handle_llm_proxy(self, payload: dict):
         """Proxies LLM requests to NVIDIA NIM, Ollama, OpenAI, or Gemini without CORS issues."""
         provider = payload.get("provider", "nvidia_nim")
-        api_key = payload.get("apiKey", "").strip()
+        api_key = payload.get("apiKey", "").strip() or read_env().get("NVIDIA_NIM_API_KEY", "")
         model = payload.get("model", "").strip()
         system_prompt = payload.get("systemPrompt", "")
         user_prompt = payload.get("userPrompt", "")

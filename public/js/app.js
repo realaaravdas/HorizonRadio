@@ -422,7 +422,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     syncSettingsToForm();
     refreshNimBadge();
     window.HorizonRadioMixer.preCacheNextTransition(true);
-    showToast("NVIDIA NIM API Key saved to config.json & activated for Riva TTS + Llama 3.3!", "success");
+    showToast("NVIDIA NIM API Key saved to git-ignored .env & activated for Riva TTS + Llama 3.3!", "success");
   });
 
   // Handle Spotify OAuth callback
